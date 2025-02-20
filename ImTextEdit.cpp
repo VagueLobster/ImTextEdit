@@ -356,7 +356,7 @@ void ImTextEdit::DeleteRange(const Coordinates& aStart, const Coordinates& aEnd)
 		else
 			line.erase(line.begin() + start, line.begin() + end);
 
-		//RemoveFolds(aStart, aEnd);
+		RemoveFolds(aStart, aEnd);
 	}
 	else
 	{
@@ -364,7 +364,7 @@ void ImTextEdit::DeleteRange(const Coordinates& aStart, const Coordinates& aEnd)
 		auto& lastLine = m_Lines[aEnd.Line];
 
 		// remove the folds
-		//RemoveFolds(aStart, aEnd);
+		RemoveFolds(aStart, aEnd);
 
 		firstLine.erase(firstLine.begin() + start, firstLine.end());
 		lastLine.erase(lastLine.begin(), lastLine.begin() + end);
@@ -1135,7 +1135,7 @@ void ImTextEdit::RemoveLine(int aIndex)
 	assert(!m_Lines.empty());
 
 	// remove folds
-	//RemoveFolds(Coordinates(aIndex, 0), Coordinates(aIndex, 100000));
+	RemoveFolds(Coordinates(aIndex, 0), Coordinates(aIndex, 100000));
 
 	// move/remove scrollbar markers
 	if (m_ScrollbarMarkers)
@@ -1166,6 +1166,19 @@ ImTextEdit::Line& ImTextEdit::InsertLine(int aIndex, int column)
 	assert(!m_ReadOnly);
 
 	auto& result = *m_Lines.insert(m_Lines.begin() + aIndex, Line());
+
+	// folding
+	for (int b = 0; b < m_FoldBegin.size(); b++)
+	{
+		if (m_FoldBegin[b].Line > aIndex - 1 || (m_FoldBegin[b].Line == aIndex - 1 && m_FoldBegin[b].Column >= column))
+			m_FoldBegin[b].Line++;
+	}
+
+	for (int b = 0; b < m_FoldEnd.size(); b++)
+	{
+		if (m_FoldEnd[b].Line > aIndex - 1 || (m_FoldEnd[b].Line == aIndex - 1 && m_FoldEnd[b].Column >= column))
+			m_FoldEnd[b].Line++;
+	}
 
 	// error markers
 	td_ErrorMarkers etmp;
@@ -1457,6 +1470,22 @@ void ImTextEdit::HandleKeyboardInputs()
 				case ShortcutID::SelectAll:
 					SelectAll();
 					break;
+				case ShortcutID::AutocompleteOpen:
+					if (m_Autocomplete && !m_IsSnippet)
+						BuildSuggestions(&keepACOpened);
+					break;
+				case ShortcutID::AutocompleteSelect:
+				case ShortcutID::AutocompleteSelectActive:
+					AutocompleteSelect();
+					break;
+				case ShortcutID::AutocompleteUp:
+					m_ACIndex = std::max<int>(m_ACIndex - 1, 0), m_ACSwitched = true;
+					keepACOpened = true;
+					break;
+				case ShortcutID::AutocompleteDown:
+					m_ACIndex = std::min<int>(m_ACIndex + 1, (int)m_ACSuggestions.size() - 1), m_ACSwitched = true;
+					keepACOpened = true;
+					break;
 				case ShortcutID::NewLine:
 					EnterCharacter('\n', false);
 					break;
@@ -1592,6 +1621,9 @@ void ImTextEdit::HandleKeyboardInputs()
 				{
 					EnterCharacter((char)c, shift);
 
+					if (c == '.')
+						BuildMemberSuggestions(&keepACOpened);
+
 					if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
 						hasWrittenALetter = true;
 
@@ -1622,7 +1654,7 @@ void ImTextEdit::HandleKeyboardInputs()
 								{
 									SetSelection(m_SnippetTagStart[j], m_SnippetTagEnd[j]);
 									Backspace();
-									InsertText(curWord);
+									AppendText(curWord);
 									m_SnippetTagEnd[j].Column = m_SnippetTagStart[j].Column + m_SnippetTagLength;
 								}
 							}
@@ -1638,6 +1670,31 @@ void ImTextEdit::HandleKeyboardInputs()
 				}
 			}
 			io.InputQueueCharacters.resize(0);
+		}
+
+		// active auto-complete
+		if (m_RequestAutocomplete && m_ReadyForAutocomplete && !m_IsSnippet)
+		{
+			BuildSuggestions(&keepACOpened);
+			m_RequestAutocomplete = false;
+			m_ReadyForAutocomplete = false;
+		}
+
+		if ((m_ACOpened && !keepACOpened) || m_FunctionDeclarationTooltip)
+		{
+			for (size_t i = 0; i < ImGuiKey_COUNT; i++)
+				keyCount += ImGui::IsKeyPressed(ImGui::GetKeyIndex(i));
+
+			if (keyCount != 0)
+			{
+				if (functionTooltipState == m_FunctionDeclarationTooltip)
+					m_FunctionDeclarationTooltip = false;
+
+				m_ACOpened = false;
+
+				if (!hasWrittenALetter)
+					m_ACObject = "";
+			}
 		}
 	}
 }
@@ -1707,6 +1764,9 @@ void ImTextEdit::HandleMouseInputs()
 				}
 				else
 				{
+					m_ACOpened = false;
+					m_ACObject = "";
+
 					auto tcoords = ScreenPosToCoordinates(ImGui::GetMousePos());
 					
 					if (!shift)
@@ -1750,6 +1810,7 @@ bool ImTextEdit::HasBreakpoint(int line)
 
 	return false;
 }
+
 void ImTextEdit::AddBreakpoint(int line, bool useCondition, std::string condition, bool enabled)
 {
 	RemoveBreakpoint(line);
@@ -1765,6 +1826,7 @@ void ImTextEdit::AddBreakpoint(int line, bool useCondition, std::string conditio
 
 	m_Breakpoints.push_back(bkpt);
 }
+
 void ImTextEdit::RemoveBreakpoint(int line)
 {
 	for (int i = 0; i < m_Breakpoints.size(); i++)
@@ -1779,6 +1841,7 @@ void ImTextEdit::RemoveBreakpoint(int line)
 	if (OnBreakpointRemove)
 		OnBreakpointRemove(this, line);
 }
+
 void ImTextEdit::SetBreakpointEnabled(int line, bool enable)
 {
 	for (int i = 0; i < m_Breakpoints.size(); i++)
@@ -1794,6 +1857,7 @@ void ImTextEdit::SetBreakpointEnabled(int line, bool enable)
 		}
 	}
 }
+
 ImTextEdit::Breakpoint& ImTextEdit::GetBreakpoint(int line)
 {
 	for (int i = 0; i < m_Breakpoints.size(); i++)
@@ -1805,7 +1869,7 @@ ImTextEdit::Breakpoint& ImTextEdit::GetBreakpoint(int line)
 
 void ImTextEdit::RenderInternal(const char* aTitle)
 {
-	/* Compute mCharAdvance regarding to scaled font size (Ctrl + mouse wheel)*/
+	/* Compute m_CharAdvance regarding to scaled font size (Ctrl + mouse wheel)*/
 	const float fontSize = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, "#", nullptr, nullptr).x;
 	m_CharAdvance = ImVec2(fontSize, ImGui::GetTextLineHeightWithSpacing() * m_LineSpacing);
 
@@ -1961,6 +2025,89 @@ void ImTextEdit::RenderInternal(const char* aTitle)
 		int linesFolded = 0;
 		uint64_t curTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 		
+		if (m_FoldEnabled)
+		{
+			if (curTime - m_FoldLastIteration > 3000)
+			{
+				// sort if needed
+				if (!m_FoldSorted)
+				{
+					std::sort(m_FoldBegin.begin(), m_FoldBegin.end());
+					std::sort(m_FoldEnd.begin(), m_FoldEnd.end());
+					m_FoldSorted = true;
+				}
+
+				// resize if needed
+				if (m_Fold.size() != m_FoldBegin.size())
+				{
+					m_Fold.resize(m_FoldBegin.size(), false);
+					m_FoldConnection.resize(m_FoldBegin.size(), -1);
+				}
+
+				// reconnect every fold BEGIN with END (TODO: any better way to do this?)
+				std::vector<bool> foldUsed(m_FoldEnd.size(), false);
+				for (int i = m_FoldBegin.size() - 1; i >= 0; i--)
+				{
+					int j = m_FoldEnd.size() - 1;
+					int lastUnused = j;
+
+					for (; j >= 0; j--)
+					{
+						if (m_FoldEnd[j] < m_FoldBegin[i])
+							break;
+
+						if (!foldUsed[j])
+							lastUnused = j;
+					}
+
+					if (lastUnused < m_FoldEnd.size())
+					{
+						foldUsed[lastUnused] = true;
+						m_FoldConnection[i] = lastUnused;
+					}
+				}
+
+				m_FoldLastIteration = curTime;
+			}
+
+			auto foldLineStart = 0;
+			auto foldLineEnd = std::min<int>((int)m_Lines.size() - 1, lineNo);
+			
+			while (foldLineStart < m_Lines.size())
+			{
+				// check if line is folded
+				for (int i = 0; i < m_FoldBegin.size(); i++)
+				{
+					if (m_FoldBegin[i].Line == foldLineStart)
+					{
+						if (i < m_Fold.size() && m_Fold[i])
+						{
+							int foldCon = m_FoldConnection[i];
+
+							if (foldCon != -1 && foldCon < m_FoldEnd.size())
+							{
+								int diff = m_FoldEnd[foldCon].Line - m_FoldBegin[i].Line;
+
+								if (foldLineStart < foldLineEnd)
+								{
+									linesFolded += diff;
+									foldLineEnd = std::min<int>((int)m_Lines.size() - 1, foldLineEnd + diff);
+								}
+
+								totalLinesFolded += diff;
+							}
+							break;
+						}
+					}
+				}
+
+				foldLineStart++;
+			}
+
+			lineNo += linesFolded;
+			lineMax = std::max<int>(0, std::min<int>((int)m_Lines.size() - 1, lineNo + pageSize));
+		}
+
 		// render
 		while (lineNo <= lineMax)
 		{
@@ -1977,6 +2124,29 @@ void ImTextEdit::RenderInternal(const char* aTitle)
 			int lineNew = 0;
 			Coordinates lineFoldStart, lineFoldEnd;
 			int lineFoldStartCIndex = 0;
+
+			if (m_FoldEnabled)
+			{
+				for (int i = 0; i < m_FoldBegin.size(); i++)
+				{
+					if (m_FoldBegin[i].Line == lineNo)
+					{
+						if (i < m_Fold.size())
+						{
+							lineFolded = m_Fold[i];
+							lineFoldStart = m_FoldBegin[i];
+							lineFoldStartCIndex = GetCharacterIndex(lineFoldStart);
+
+							int foldCon = m_FoldConnection[i];
+
+							if (lineFolded && foldCon != -1 && foldCon < m_FoldEnd.size())
+								lineFoldEnd = m_FoldEnd[foldCon];
+						}
+
+						break;
+					}
+				}
+			}
 
 			// Draw selection for the current line
 			float sstart = -1.0f;
@@ -2271,6 +2441,142 @@ void ImTextEdit::RenderInternal(const char* aTitle)
 
 					auto lineNoWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, buf, nullptr, nullptr).x;
 					drawList->AddText(ImVec2(lineStartScreenPos.x + scrollX + m_TextStart - lineNoWidth, lineStartScreenPos.y), m_Palette[(int)PaletteIndex::LineNumber], buf);
+				}
+
+				// fold +/- icon
+				if (m_FoldEnabled)
+				{
+					int foldID = 0;
+					int foldWeight = 0;
+					bool hasFold = false;
+					bool hasFoldEnd = false;
+					bool isFolded = false;
+					float foldBtnSize = spaceSize;
+					float foldStartX = lineStartScreenPos.x + scrollX + m_TextStart - spaceSize * 2.0f + 4;
+					float foldStartY = lineStartScreenPos.y + (ImGui::GetFontSize() - foldBtnSize) / 2.0f;
+
+					// calculate current weight + find if here ends or starts another "fold"
+					for (int i = 0; i < m_FoldBegin.size(); i++)
+					{
+						if (m_FoldBegin[i].Line == lineNo)
+						{
+							hasFold = true;
+							foldID = i;
+							
+							if (i < m_Fold.size())
+								isFolded = m_Fold[i];
+							
+							break;
+						}
+						else if (m_FoldBegin[i].Line < lineNo)
+						{
+							foldWeight++;
+						}
+					}
+
+					for (int i = 0; i < m_FoldEnd.size(); i++)
+					{
+						if (m_FoldEnd[i].Line == lineNo)
+						{
+							hasFoldEnd = true;
+							break;
+						}
+						else if (m_FoldEnd[i].Line < lineNo)
+						{
+							foldWeight--;
+						}
+					}
+
+					bool isHovered = (hoverFoldWeight && foldWeight >= hoverFoldWeight);
+
+					// line
+					if (foldWeight > 0 && !hasFold)
+					{
+						ImVec2 p1(foldStartX + foldBtnSize / 2, lineStartScreenPos.y);
+						ImVec2 p2(p1.x, p1.y + m_CharAdvance.y + 1.0f);
+
+						drawList->AddLine(p1, p2, m_Palette[(int)PaletteIndex::Default]);
+					}
+
+					if (hasFold) // render the +/- box
+					{
+						ImVec2 fmin(foldStartX, foldStartY + 2);
+						ImVec2 fmax(fmin.x + foldBtnSize, fmin.y + foldBtnSize);
+
+						// line up
+						if (foldWeight > 0)
+						{
+							ImVec2 p1(foldStartX + foldBtnSize / 2, lineStartScreenPos.y);
+							ImVec2 p2(p1.x, fmin.y);
+							drawList->AddLine(p1, p2, m_Palette[(int)PaletteIndex::Default]);
+						}
+
+						// fold button
+						foldWeight++;
+						drawList->AddRect(fmin, fmax, m_Palette[(int)PaletteIndex::Default]);
+
+						// check if mouse is over this fold button
+						ImVec2 mpos = ImGui::GetMousePos();
+						if (mpos.x >= fmin.x && mpos.x <= fmax.x && mpos.y >= fmin.y && mpos.y <= fmax.y)
+						{
+							isHovered = true;
+							hoverFoldWeight = foldWeight;
+
+							if (isFolded)
+								hoverFoldWeight = 0;
+
+							ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
+
+							if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+							{
+								if (foldID < m_Fold.size())
+								{
+									isFolded = !isFolded;
+									m_Fold[foldID] = isFolded;
+								}
+							}
+						}
+
+						// minus
+						drawList->AddLine(ImVec2(fmin.x + 3, (fmin.y + fmax.y) / 2.0f), ImVec2(fmax.x - 4, (fmin.y + fmax.y) / 2.0f), m_Palette[(int)PaletteIndex::Default]);
+
+						// plus
+						if (isFolded)
+							drawList->AddLine(ImVec2((fmin.x + fmax.x) / 2.0f, fmin.y + 3), ImVec2((fmin.x + fmax.x) / 2.0f, fmax.y - 4), m_Palette[(int)PaletteIndex::Default]);
+
+						// line down
+						if (!isFolded || foldWeight > 1)
+						{
+							float lineContinueY = (lineStartScreenPos.y + m_CharAdvance.y) - fmax.y;
+							ImVec2 p1(foldStartX + foldBtnSize / 2, fmax.y);
+							ImVec2 p2(p1.x, fmax.y + lineContinueY);
+							drawList->AddLine(p1, p2, m_Palette[(int)PaletteIndex::Default]);
+						}
+					}
+					else if (hasFoldEnd) // horizontal line
+					{
+						foldWeight--;
+						if (hoverFoldWeight && foldWeight < hoverFoldWeight)
+							hoverFoldWeight = 0;
+
+						ImVec2 p1(foldStartX + foldBtnSize / 2, lineStartScreenPos.y + m_CharAdvance.y - 1.0f);
+						ImVec2 p2(p1.x + m_CharAdvance.x / 2.0f, p1.y);
+						drawList->AddLine(p1, p2, m_Palette[(int)PaletteIndex::Default]);
+					}
+
+					// hover background
+					if (isHovered)
+					{
+						// sidebar bg
+						ImVec2 pmin(foldStartX - 4, lineStartScreenPos.y);
+						ImVec2 pmax(pmin.x + foldBtnSize + 8, pmin.y + m_CharAdvance.y);
+						drawList->AddRectFilled(pmin, pmax, 0x40000000 | (0x00FFFFFF & m_Palette[(int)PaletteIndex::Default]));
+
+						// line bg
+						pmin.x = pmax.x;
+						pmax.x = lineStartScreenPos.x + scrollX + m_TextStart + contentSize.x;
+						drawList->AddRectFilled(pmin, pmax, 0x20000000 | (0x00FFFFFF & m_Palette[(int)PaletteIndex::Default]));
+					}
 				}
 			}
 
@@ -2569,6 +2875,43 @@ void ImTextEdit::RenderInternal(const char* aTitle)
 			m_FunctionDeclarationTooltip = false;
 	}
 
+	// suggestions window
+	if (m_ACOpened)
+	{
+		auto acCoord = FindWordStart(m_ACPosition);
+		ImVec2 acPos = CoordinatesToScreenPos(acCoord);
+		acPos.y += m_CharAdvance.y;
+		acPos.x += ImGui::GetScrollX();
+
+		drawList->AddRectFilled(acPos, ImVec2(acPos.x + UICalculateSize(150), acPos.y + UICalculateSize(100)), ImGui::GetColorU32(ImGuiCol_FrameBg));
+
+		ImFont* font = ImGui::GetFont();
+		ImGui::PopFont();
+
+		ImGui::SetNextWindowPos(acPos, ImGuiCond_Always);
+		ImGui::BeginChild("##texteditor_autocompl", ImVec2(UICalculateSize(150), UICalculateSize(100)), true);
+
+		for (int i = 0; i < m_ACSuggestions.size(); i++)
+		{
+			ImGui::Selectable(m_ACSuggestions[i].first.c_str(), i == m_ACIndex);
+			
+			if (i == m_ACIndex)
+				ImGui::SetScrollHereY();
+		}
+
+		ImGui::EndChild();
+
+		ImGui::PushFont(font);
+
+		ImGui::SetWindowFocus();
+
+		if (ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Escape)))
+		{
+			m_ACOpened = false;
+			m_ACObject = "";
+		}
+	}
+
 	ImGui::Dummy(ImVec2(longest + EditorCalculateSize(100), (m_Lines.size() - totalLinesFolded) * m_CharAdvance.y));
 
 	if (m_DebugCurrentLineUpdated)
@@ -2615,6 +2958,663 @@ void ImTextEdit::RenderInternal(const char* aTitle)
 	{
 		ImVec2 dbgPos = ImVec2(m_UICursorPos.x + scrollX + m_WindowWidth / 2 - m_DebugBarWidth / 2, m_UICursorPos.y + ImGui::GetScrollY());
 		drawList->AddRectFilled(dbgPos, ImVec2(dbgPos.x + m_DebugBarWidth, dbgPos.y + m_DebugBarHeight), ImGui::GetColorU32(ImGuiCol_FrameBg));
+	}
+}
+
+void ImTextEdit::OpenFunctionDeclarationTooltip(const std::string& obj, ImTextEdit::Coordinates coord)
+{
+	if (m_ACFunctions.count(obj)) {
+		m_FunctionDeclarationTooltip = true;
+		m_FunctionDeclarationCoord = FindWordStart(coord);
+		m_FunctionDeclaration = BuildFunctionDef(obj, m_LanguageDefinition.Name);
+	}
+}
+
+std::string ImTextEdit::BuildFunctionDef(const std::string& func, const std::string& lang)
+{
+	if (m_ACFunctions.count(func) == 0)
+		return "";
+
+	const auto& funcDef = m_ACFunctions[func];
+
+	std::string ret = BuildVariableType(funcDef.ReturnType, lang) + " " + func + "(";
+
+	for (size_t i = 0; i < funcDef.Arguments.size(); i++) {
+		ret += BuildVariableType(funcDef.Arguments[i], lang) + " " + funcDef.Arguments[i].Name;
+
+		if (i != funcDef.Arguments.size() - 1)
+			ret += ", ";
+	}
+
+	return ret + ")";
+}
+std::string ImTextEdit::BuildVariableType(const ed::SPIRVParser::Variable& var, const std::string& lang)
+{
+	switch (var.Type) {
+	case ed::SPIRVParser::ValueType::Bool:
+		return "bool";
+
+	case ed::SPIRVParser::ValueType::Float:
+		return "float";
+
+	case ed::SPIRVParser::ValueType::Int:
+		return "int";
+
+	case ed::SPIRVParser::ValueType::Void:
+		return "void";
+
+	case ed::SPIRVParser::ValueType::Struct:
+		return var.TypeName;
+
+	case ed::SPIRVParser::ValueType::Vector: {
+		std::string count = std::string(1, var.TypeComponentCount + '0');
+		if (lang == "HLSL") {
+			switch (var.BaseType) {
+			case ed::SPIRVParser::ValueType::Bool:
+				return "bool" + count;
+
+			case ed::SPIRVParser::ValueType::Float:
+				return "float" + count;
+
+			case ed::SPIRVParser::ValueType::Int:
+				return "int" + count;
+			}
+		}
+		else {
+			switch (var.BaseType) {
+			case ed::SPIRVParser::ValueType::Bool:
+				return "bvec" + count;
+
+			case ed::SPIRVParser::ValueType::Float:
+				return "vec" + count;
+
+			case ed::SPIRVParser::ValueType::Int:
+				return "ivec" + count;
+			}
+		}
+	} break;
+
+	case ed::SPIRVParser::ValueType::Matrix: {
+		std::string count = std::string(1, var.TypeComponentCount + '0');
+		if (lang == "HLSL") {
+			return "float" + count + "x" + count;
+		}
+		else {
+			return "mat" + count;
+		}
+	} break;
+	}
+
+	return "";
+}
+
+void ImTextEdit::RemoveFolds(const Coordinates& aStart, const Coordinates& aEnd)
+{
+	RemoveFolds(m_FoldBegin, aStart, aEnd);
+	RemoveFolds(m_FoldEnd, aStart, aEnd);
+}
+void ImTextEdit::RemoveFolds(std::vector<Coordinates>& folds, const Coordinates& aStart, const Coordinates& aEnd)
+{
+	bool deleteFullyLastLine = false;
+
+	if (aEnd.Line >= m_Lines.size() || aEnd.Column >= 100000)
+		deleteFullyLastLine = true;
+
+	for (int i = 0; i < folds.size(); i++)
+	{
+		if (folds[i].Line >= aStart.Line && folds[i].Line <= aEnd.Line)
+		{
+			if (folds[i].Line == aStart.Line && aStart.Line != aEnd.Line)
+			{
+				if (folds[i].Column >= aStart.Column)
+				{
+					folds.erase(folds.begin() + i);
+					m_FoldSorted = false;
+					i--;
+				}
+			}
+			else if (folds[i].Line == aEnd.Line)
+			{
+				if (folds[i].Column < aEnd.Column)
+				{
+					if (aEnd.Line != aStart.Line || folds[i].Column >= aStart.Column)
+					{
+						folds.erase(folds.begin() + i);
+						m_FoldSorted = false;
+						i--;
+					}
+				}
+				else
+				{
+					if (aEnd.Line == aStart.Line)
+					{
+						folds[i].Column = std::max<int>(0, folds[i].Column - (aEnd.Column - aStart.Column));
+					}
+					else
+					{
+						// calculate new
+						if (aStart.Line < m_Lines.size())
+						{
+							auto* line = &m_Lines[aStart.Line];
+							int colOffset = 0;
+							int chi = 0;
+							bool skipped = false;
+							int bracketEndChIndex = GetCharacterIndex(m_FoldEnd[i]);
+
+							while (chi < (int)line->size() && (!skipped || (skipped && chi < bracketEndChIndex)))
+							{
+								auto c = (*line)[chi].Character;
+								chi += UTF8CharLength(c);
+
+								if (c == '\t')
+									colOffset = (colOffset / m_TabSize) * m_TabSize + m_TabSize;
+								else
+									colOffset++;
+
+								// go to the last line
+								if (chi == line->size() && aEnd.Line < m_Lines.size() && !skipped)
+								{
+									chi = GetCharacterIndex(aEnd);
+									line = &m_Lines[aEnd.Line];
+									skipped = true;
+								}
+							}
+
+							folds[i].Column = colOffset;
+						}
+
+						folds[i].Line -= (aEnd.Line - aStart.Line);
+					}
+				}
+			}
+			else
+			{
+				folds.erase(folds.begin() + i);
+				m_FoldSorted = false;
+				i--;
+			}
+		}
+		else if (folds[i].Line > aEnd.Line)
+		{
+			folds[i].Line -= (aEnd.Line - aStart.Line) + deleteFullyLastLine;
+		}
+	}
+}
+
+std::string ImTextEdit::AutcompleteParse(const std::string& str, const Coordinates& start)
+{
+	const char* buffer = str.c_str();
+	const char* tagPlaceholderStart = buffer;
+	const char* tagStart = buffer;
+
+	bool parsingTag = false;
+	bool parsingTagPlaceholder = false;
+
+	std::vector<int> tagIds, tagLocations, tagLengths;
+	std::unordered_map<int, std::string> tagPlaceholders;
+
+	m_SnippetTagStart.clear();
+	m_SnippetTagEnd.clear();
+	m_SnippetTagID.clear();
+	m_SnippetTagHighlight.clear();
+
+	Coordinates cursor = start, tagStartCoord, tagEndCoord;
+
+	int tagId = -1;
+	int modif = 0;
+
+	while (*buffer != '\0')
+	{
+		if (*buffer == '{' && *(buffer + 1) == '$')
+		{
+			parsingTagPlaceholder = false;
+			parsingTag = true;
+			tagId = -1;
+			tagStart = buffer;
+
+			tagStartCoord = cursor;
+
+			const char* skipBuffer = buffer;
+			char** endLoc = const_cast<char**>(&buffer); // oops
+			tagId = strtol(buffer + 2, endLoc, 10);
+
+			cursor.Column += *endLoc - skipBuffer;
+
+			if (*buffer == ':')
+			{
+				tagPlaceholderStart = buffer + 1;
+				parsingTagPlaceholder = true;
+			}
+		}
+
+		if (*buffer == '}' && parsingTag)
+		{
+			std::string tagPlaceholder = "";
+
+			if (parsingTagPlaceholder)
+				tagPlaceholder = std::string(tagPlaceholderStart, buffer - tagPlaceholderStart);
+
+			tagIds.push_back(tagId);
+			tagLocations.push_back(tagStart - str.c_str());
+			tagLengths.push_back(buffer - tagStart + 1);
+			
+			if (!tagPlaceholder.empty() || tagPlaceholders.count(tagId) == 0)
+			{
+				if (tagPlaceholder.empty())
+					tagPlaceholder = " ";
+
+				tagStartCoord.Column = std::max<int>(0, tagStartCoord.Column - modif);
+				tagEndCoord = tagStartCoord;
+				tagEndCoord.Column += tagPlaceholder.size();
+
+				m_SnippetTagStart.push_back(tagStartCoord);
+				m_SnippetTagEnd.push_back(tagEndCoord);
+				m_SnippetTagID.push_back(tagId);
+				m_SnippetTagHighlight.push_back(true);
+
+				tagPlaceholders[tagId] = tagPlaceholder;
+			}
+			else
+			{
+				tagStartCoord.Column = std::max<int>(0, tagStartCoord.Column - modif);
+				tagEndCoord = tagStartCoord;
+				tagEndCoord.Column += tagPlaceholders[tagId].size();
+
+				m_SnippetTagStart.push_back(tagStartCoord);
+				m_SnippetTagEnd.push_back(tagEndCoord);
+				m_SnippetTagID.push_back(tagId);
+				m_SnippetTagHighlight.push_back(false);
+			}
+
+			modif += (tagLengths.back() - tagPlaceholders[tagId].size());
+
+			parsingTagPlaceholder = false;
+			parsingTag = false;
+			tagId = -1;
+		}
+
+		if (*buffer == '\n')
+		{
+			cursor.Line++;
+			cursor.Column = 0;
+			modif = 0;
+		}
+		else
+		{
+			cursor.Column++;
+		}
+
+		buffer++;
+	}
+
+	m_IsSnippet = !tagIds.empty();
+
+	std::string ret = str;
+	
+	for (int i = tagLocations.size() - 1; i >= 0; i--)
+	{
+		ret.erase(tagLocations[i], tagLengths[i]);
+		ret.insert(tagLocations[i], tagPlaceholders[tagIds[i]]);
+	}
+
+	return ret;
+}
+void ImTextEdit::AutocompleteSelect()
+{
+	UndoRecord undo;
+	undo.Before = m_State;
+
+	auto curCoord = GetCursorPosition();
+	curCoord.Column = std::max<int>(curCoord.Column - 1, 0);
+
+	auto acStart = FindWordStart(curCoord);
+	auto acEnd = FindWordEnd(curCoord);
+
+	if (!m_ACObject.empty())
+		acStart = m_ACPosition;
+
+	undo.AddedStart = acStart;
+	int undoPopCount = std::max(0, acEnd.Column - acStart.Column) + 1;
+
+	if (!m_ACObject.empty() && m_ACWord.empty())
+		undoPopCount = 0;
+
+	const auto& acEntry = m_ACSuggestions[m_ACIndex];
+
+	std::string entryText = AutcompleteParse(acEntry.second, acStart);
+
+	if (acStart.Column != acEnd.Column)
+	{
+		SetSelection(acStart, acEnd);
+		Backspace();
+	}
+	
+	AppendText(entryText, true);
+
+	undo.Added = entryText;
+	undo.AddedEnd = GetActualCursorCoordinates();
+
+	if (m_IsSnippet && m_SnippetTagStart.size() > 0)
+	{
+		SetSelection(m_SnippetTagStart[0], m_SnippetTagEnd[0]);
+		SetCursorPosition(m_SnippetTagEnd[0]);
+		m_SnippetTagSelected = 0;
+		m_SnippetTagLength = 0;
+		m_SnippetTagPreviousLength = m_SnippetTagEnd[m_SnippetTagSelected].Column - m_SnippetTagStart[m_SnippetTagSelected].Column;
+	}
+
+	m_RequestAutocomplete = false;
+	m_ACOpened = false;
+	m_ACObject = "";
+
+	undo.After = m_State;
+
+	while (undoPopCount-- != 0)
+	{
+		m_UndoIndex--;
+		m_UndoBuffer.pop_back();
+	}
+	
+	AddUndo(undo);
+}
+
+void ImTextEdit::BuildMemberSuggestions(bool* keepACOpened)
+{
+	m_ACSuggestions.clear();
+
+	auto curPos = GetCorrectCursorPosition();
+	std::string obj = GetWordAt(curPos);
+
+	ed::SPIRVParser::Variable* var = nullptr;
+
+	for (auto& func : m_ACFunctions)
+	{
+		// suggest arguments and locals
+		if (m_State.CursorPosition.Line >= func.second.LineStart - 2 && m_State.CursorPosition.Line <= func.second.LineEnd + 1)
+		{
+			// locals
+			for (auto& loc : func.second.Locals)
+			{
+				if (strcmp(loc.Name.c_str(), obj.c_str()) == 0)
+				{
+					var = &loc;
+					break;
+				}
+			}
+
+			// arguments
+			if (var == nullptr)
+			{
+				for (auto& arg : func.second.Arguments)
+				{
+					if (strcmp(arg.Name.c_str(), obj.c_str()) == 0)
+					{
+						var = &arg;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	if (var == nullptr)
+	{
+		for (auto& uni : m_ACUniforms)
+		{
+			if (strcmp(uni.Name.c_str(), obj.c_str()) == 0)
+			{
+				var = &uni;
+				break;
+			}
+		}
+	}
+
+	if (var == nullptr)
+	{
+		for (auto& glob : m_ACGlobals)
+		{
+			if (strcmp(glob.Name.c_str(), obj.c_str()) == 0)
+			{
+				var = &glob;
+				break;
+			}
+		}
+	}
+
+	if (var != nullptr)
+	{
+		m_ACIndex = 0;
+		m_ACSwitched = false;
+
+		if (var->TypeName.size() > 0 && var->TypeName[0] != 0)
+		{
+			for (const auto& uType : m_ACUserTypes)
+			{
+				if (uType.first == var->TypeName)
+				{
+					for (const auto& uMember : uType.second)
+						m_ACSuggestions.push_back(std::make_pair(uMember.Name, uMember.Name));
+				}
+			}
+
+			if (m_ACSuggestions.size() > 0)
+				m_ACObject = var->TypeName;
+		}
+	}
+
+	if (m_ACSuggestions.size() > 0)
+	{
+		m_ACOpened = true;
+		m_ACWord = "";
+
+		if (keepACOpened != nullptr)
+			*keepACOpened = true;
+
+		Coordinates curCursor = GetCursorPosition();
+
+		m_ACPosition = FindWordStart(curCursor);
+	}
+}
+void ImTextEdit::BuildSuggestions(bool* keepACOpened)
+{
+	m_ACWord = GetWordUnderCursor();
+
+	bool isValid = false;
+	
+	for (int i = 0; i < m_ACWord.size(); i++)
+	{
+		if ((m_ACWord[i] >= 'a' && m_ACWord[i] <= 'z') || (m_ACWord[i] >= 'A' && m_ACWord[i] <= 'Z'))
+		{
+			isValid = true;
+			break;
+		}
+	}
+
+	if (isValid)
+	{
+		m_ACSuggestions.clear();
+		m_ACIndex = 0;
+		m_ACSwitched = false;
+
+		std::string acWord = m_ACWord;
+		std::transform(acWord.begin(), acWord.end(), acWord.begin(), tolower);
+
+		struct ACEntry
+		{
+			ACEntry(const std::string& str, const std::string& val, int loc)
+			{
+				DisplayString = str;
+				Value = val;
+				Location = loc;
+			}
+
+			std::string DisplayString;
+			std::string Value;
+			int Location;
+		};
+
+		std::vector<ACEntry> weights;
+
+		if (m_ACObject.empty())
+		{
+			// get the words
+			for (int i = 0; i < m_ACEntrySearch.size(); i++)
+			{
+				std::string lwrStr = m_ACEntrySearch[i];
+				std::transform(lwrStr.begin(), lwrStr.end(), lwrStr.begin(), tolower);
+
+				size_t loc = lwrStr.find(acWord);
+
+				if (loc != std::string::npos)
+					weights.push_back(ACEntry(m_ACEntries[i].first, m_ACEntries[i].second, loc));
+			}
+
+			for (auto& func : m_ACFunctions)
+			{
+				std::string lwrStr = func.first;
+				std::transform(lwrStr.begin(), lwrStr.end(), lwrStr.begin(), tolower);
+
+				// suggest arguments and locals
+				if (m_State.CursorPosition.Line >= func.second.LineStart - 2 && m_State.CursorPosition.Line <= func.second.LineEnd + 1)
+				{
+					// locals
+					for (auto& loc : func.second.Locals)
+					{
+						std::string lwrLoc = loc.Name;
+						std::transform(lwrLoc.begin(), lwrLoc.end(), lwrLoc.begin(), tolower);
+
+						size_t location = lwrLoc.find(acWord);
+						if (location != std::string::npos)
+							weights.push_back(ACEntry(loc.Name, loc.Name, location));
+					}
+
+					// arguments
+					for (auto& arg : func.second.Arguments)
+					{
+						std::string lwrLoc = arg.Name;
+						std::transform(lwrLoc.begin(), lwrLoc.end(), lwrLoc.begin(), tolower);
+
+						size_t loc = lwrLoc.find(acWord);
+						if (loc != std::string::npos)
+							weights.push_back(ACEntry(arg.Name, arg.Name, loc));
+					}
+				}
+
+				size_t loc = lwrStr.find(acWord);
+
+				if (loc != std::string::npos)
+				{
+					std::string val = func.first;
+					if (m_CompleteBraces) val += "()";
+					weights.push_back(ACEntry(func.first, val, loc));
+				}
+			}
+
+			for (auto& uni : m_ACUniforms)
+			{
+				std::string lwrStr = uni.Name;
+				std::transform(lwrStr.begin(), lwrStr.end(), lwrStr.begin(), tolower);
+
+				size_t loc = lwrStr.find(acWord);
+				
+				if (loc != std::string::npos)
+					weights.push_back(ACEntry(uni.Name, uni.Name, loc));
+			}
+			for (auto& glob : m_ACGlobals)
+			{
+				std::string lwrStr = glob.Name;
+				std::transform(lwrStr.begin(), lwrStr.end(), lwrStr.begin(), tolower);
+
+				size_t loc = lwrStr.find(acWord);
+
+				if (loc != std::string::npos)
+					weights.push_back(ACEntry(glob.Name, glob.Name, loc));
+			}
+			
+			for (auto& utype : m_ACUserTypes)
+			{
+				std::string lwrStr = utype.first;
+				std::transform(lwrStr.begin(), lwrStr.end(), lwrStr.begin(), tolower);
+
+				size_t loc = lwrStr.find(acWord);
+			
+				if (loc != std::string::npos)
+					weights.push_back(ACEntry(utype.first, utype.first, loc));
+			}
+
+			for (auto& str : m_LanguageDefinition.Keywords)
+			{
+				std::string lwrStr = str;
+				std::transform(lwrStr.begin(), lwrStr.end(), lwrStr.begin(), tolower);
+
+				size_t loc = lwrStr.find(acWord);
+				
+				if (loc != std::string::npos)
+					weights.push_back(ACEntry(str, str, loc));
+			}
+
+			for (auto& str : m_LanguageDefinition.Identifiers)
+			{
+				std::string lwrStr = str.first;
+				std::transform(lwrStr.begin(), lwrStr.end(), lwrStr.begin(), tolower);
+
+				size_t loc = lwrStr.find(acWord);
+				
+				if (loc != std::string::npos)
+				{
+					std::string val = str.first;
+					
+					if (m_CompleteBraces) val += "()";
+					weights.push_back(ACEntry(str.first, val, loc));
+				}
+			}
+		}
+		else
+		{
+			for (const auto& uType : m_ACUserTypes)
+			{
+				if (uType.first == m_ACObject)
+				{
+					for (const auto& uMember : uType.second)
+					{
+
+						std::string lwrStr = uMember.Name;
+						std::transform(lwrStr.begin(), lwrStr.end(), lwrStr.begin(), tolower);
+
+						size_t loc = lwrStr.find(acWord);
+						
+						if (loc != std::string::npos)
+							weights.push_back(ACEntry(uMember.Name, uMember.Name, loc));
+					}
+				}
+			}
+		}
+
+		// build the actual list
+		for (const auto& entry : weights)
+		{
+			if (entry.Location == 0)
+				m_ACSuggestions.push_back(std::make_pair(entry.DisplayString, entry.Value));
+		}
+
+		for (const auto& entry : weights)
+		{
+			if (entry.Location != 0)
+				m_ACSuggestions.push_back(std::make_pair(entry.DisplayString, entry.Value));
+		}
+
+		if (m_ACSuggestions.size() > 0)
+		{
+			m_ACOpened = true;
+
+			if (keepACOpened != nullptr)
+				*keepACOpened = true;
+
+			Coordinates curCursor = GetCursorPosition();
+			curCursor.Column--;
+
+			m_ACPosition = FindWordStart(curCursor);
+		}
 	}
 }
 
@@ -2962,7 +3962,7 @@ void ImTextEdit::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 						selEnd.Column += strlen(m_FindWord);
 						SetSelection(curPos, selEnd);
 						DeleteSelection();
-						InsertText(m_ReplaceWord);
+						AppendText(m_ReplaceWord);
 						SetCursorPosition(selEnd);
 						m_ScrollToCursor = true;
 
@@ -3018,7 +4018,7 @@ void ImTextEdit::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 							selEnd.Column += strlen(m_FindWord);
 							SetSelection(curPos, selEnd);
 							DeleteSelection();
-							InsertText(m_ReplaceWord);
+							AppendText(m_ReplaceWord);
 							SetCursorPosition(selEnd);
 							m_ScrollToCursor = true;
 
@@ -3166,6 +4166,9 @@ void ImTextEdit::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 void ImTextEdit::SetText(const std::string & aText)
 {
 	m_Lines.clear();
+	m_FoldBegin.clear();
+	m_FoldEnd.clear();
+	m_FoldSorted = false;
 
 	m_Lines.emplace_back(Line());
 
@@ -3173,9 +4176,18 @@ void ImTextEdit::SetText(const std::string & aText)
 	{
 		if (chr == '\r') {} // ignore the carriage return character
 		else if (chr == '\n')
+		{
 			m_Lines.emplace_back(Line());
+		}
 		else
+		{
+			if (chr == '{')
+				m_FoldBegin.push_back(Coordinates(m_Lines.size() - 1, m_Lines.back().size()));
+			else if (chr == '}')
+				m_FoldEnd.push_back(Coordinates(m_Lines.size() - 1, m_Lines.back().size()));
+
 			m_Lines.back().emplace_back(Glyph(chr, PaletteIndex::Default));
+		}
 	}
 	
 	m_TextChanged = true;
@@ -3190,6 +4202,9 @@ void ImTextEdit::SetText(const std::string & aText)
 void ImTextEdit::SetTextLines(const std::vector<std::string> & aLines)
 {
 	m_Lines.clear();
+	m_FoldBegin.clear();
+	m_FoldEnd.clear();
+	m_FoldSorted = false;
 
 	if (aLines.empty())
 	{
@@ -3207,6 +4222,11 @@ void ImTextEdit::SetTextLines(const std::vector<std::string> & aLines)
 
 			for (size_t j = 0; j < aLine.size(); ++j)
 			{
+				if (aLine[j] == '{')
+					m_FoldBegin.push_back(Coordinates(i, j));
+				else if (aLine[j] == '}')
+					m_FoldEnd.push_back(Coordinates(i, j));
+
 				m_Lines[i].emplace_back(Glyph(aLine[j], PaletteIndex::Default));
 			}
 		}
@@ -3374,6 +4394,14 @@ void ImTextEdit::EnterCharacter(ImWchar aChar, bool aShift)
 		line.erase(line.begin() + cindex, line.begin() + line.size());
 		SetCursorPosition(Coordinates(coord.Line + 1, GetCharacterColumn(coord.Line + 1, (int)whitespaceSize)));
 		u.Added = (char)aChar;
+
+		// shift folds
+		for (int b = 0; b < m_FoldBegin.size(); b++)
+			if (m_FoldBegin[b].Line == coord.Line + 1)
+				m_FoldBegin[b].Column = std::max<int>(0, (m_FoldBegin[b].Column + foldOffset) + (m_FoldBegin[b].Column != coord.Column));
+		for (int b = 0; b < m_FoldEnd.size(); b++)
+			if (m_FoldEnd[b].Line == coord.Line + 1)
+				m_FoldEnd[b].Column = std::max<int>(0, (m_FoldEnd[b].Column + foldOffset) + (m_FoldEnd[b].Column != coord.Column));
 	}
 	else
 	{
@@ -3404,14 +4432,77 @@ void ImTextEdit::EnterCharacter(ImWchar aChar, bool aShift)
 				while (d-- > 0 && cindex < (int)line.size())
 				{
 					u.Removed += line[cindex].Character;
+
+
+					// remove fold information if needed
+					if (line[cindex].Character == '{')
+					{
+						for (int fl = 0; fl < m_FoldBegin.size(); fl++)
+						{
+							if (m_FoldBegin[fl].Line == coord.Line && m_FoldBegin[fl].Column == coord.Column)
+							{
+								m_FoldBegin.erase(m_FoldBegin.begin() + fl);
+								m_FoldSorted = false;
+								break;
+							}
+						}
+					}
+
+					if (line[cindex].Character == '}')
+					{
+						for (int fl = 0; fl < m_FoldEnd.size(); fl++)
+						{
+							if (m_FoldEnd[fl].Line == coord.Line && m_FoldEnd[fl].Column == coord.Column)
+							{
+								m_FoldEnd.erase(m_FoldEnd.begin() + fl);
+								m_FoldSorted = false;
+								break;
+							}
+						}
+					}
+
 					line.erase(line.begin() + cindex);
 				}
 			}
 
 			// move the folds if necessary
 			int foldOffset = 0;
-			if (buf[0] == '\t') foldOffset = m_TabSize - (coord.Column - (coord.Column / m_TabSize) * m_TabSize);
-			else foldOffset = strlen(buf);
+
+			if (buf[0] == '\t')
+				foldOffset = m_TabSize - (coord.Column - (coord.Column / m_TabSize) * m_TabSize);
+			else
+				foldOffset = strlen(buf);
+
+			int foldColumn = GetCharacterColumn(coord.Line, cindex);
+
+			for (int b = 0; b < m_FoldBegin.size(); b++)
+			{
+				if (m_FoldBegin[b].Line == coord.Line && m_FoldBegin[b].Column >= foldColumn)
+					m_FoldBegin[b].Column += foldOffset;
+			}
+
+			for (int b = 0; b < m_FoldEnd.size(); b++)
+			{
+				if (m_FoldEnd[b].Line == coord.Line && m_FoldEnd[b].Column >= foldColumn)
+					m_FoldEnd[b].Column += foldOffset;
+			}
+
+			// insert text
+			for (auto p = buf; *p != '\0'; p++, ++cindex)
+			{
+				if (*p == '{')
+				{
+					m_FoldBegin.push_back(Coordinates(coord.Line, foldColumn));
+					m_FoldSorted = false;
+				}
+				else if (*p == '}')
+				{
+					m_FoldEnd.push_back(Coordinates(coord.Line, foldColumn));
+					m_FoldSorted = false;
+				}
+
+				line.insert(line.begin() + cindex, Glyph(*p, PaletteIndex::Default));
+			}
 
 			u.Added = buf;
 
@@ -3421,6 +4512,13 @@ void ImTextEdit::EnterCharacter(ImWchar aChar, bool aShift)
 		{
 			return;
 		}
+	}
+
+	// active suggestions
+	if (m_ActiveAutocomplete && aChar <= 127 && (isalpha(aChar) || aChar == '_'))
+	{
+		m_RequestAutocomplete = true;
+		m_ReadyForAutocomplete = false;
 	}
 
 	if (m_ScrollbarMarkers)
@@ -3610,12 +4708,12 @@ void ImTextEdit::SetSelection(const Coordinates & aStart, const Coordinates & aE
 	m_ReplaceIndex += m_State.CursorPosition.Column;
 }
 
-void ImTextEdit::InsertText(const std::string& aValue, bool indent)
+void ImTextEdit::AppendText(const std::string& aValue, bool indent)
 {
-	InsertText(aValue.c_str(), indent);
+	AppendText(aValue.c_str(), indent);
 }
 
-void ImTextEdit::InsertText(const char* aValue, bool indent)
+void ImTextEdit::AppendText(const char* aValue, bool indent)
 {
 	if (aValue == nullptr)
 		return;
@@ -3999,6 +5097,25 @@ void ImTextEdit::Delete()
 			u.RemovedStart = u.RemovedEnd = GetActualCursorCoordinates();
 			Advance(u.RemovedEnd);
 
+			// move folds
+			for (int i = 0; i < m_FoldBegin.size(); i++)
+			{
+				if (m_FoldBegin[i].Line == pos.Line + 1)
+				{
+					m_FoldBegin[i].Line = std::max<int>(0, m_FoldBegin[i].Line - 1);
+					m_FoldBegin[i].Column += GetCharacterColumn(pos.Line, line.size());
+				}
+			}
+
+			for (int i = 0; i < m_FoldEnd.size(); i++)
+			{
+				if (m_FoldEnd[i].Line == pos.Line + 1)
+				{
+					m_FoldEnd[i].Line = std::max<int>(0, m_FoldEnd[i].Line - 1);
+					m_FoldEnd[i].Column += GetCharacterColumn(pos.Line, line.size());
+				}
+			}
+
 			auto& nextLine = m_Lines[pos.Line + 1];
 			line.insert(line.end(), nextLine.begin(), nextLine.end());
 
@@ -4010,6 +5127,8 @@ void ImTextEdit::Delete()
 			u.RemovedStart = u.RemovedEnd = GetActualCursorCoordinates();
 			u.RemovedEnd.Column++;
 			u.Removed = GetText(u.RemovedStart, u.RemovedEnd);
+
+			RemoveFolds(u.RemovedStart, u.RemovedEnd);
 
 			auto d = UTF8CharLength(line[cindex].Character);
 
@@ -4115,6 +5234,25 @@ void ImTextEdit::Backspace()
 				etmp.insert(td_ErrorMarkers::value_type(i.first - 1 == m_State.CursorPosition.Line ? i.first - 1 : i.first, i.second));
 			m_ErrorMarkers = std::move(etmp);
 
+			// shift folds
+			for (int b = 0; b < m_FoldBegin.size(); b++)
+			{
+				if (m_FoldBegin[b].Line == m_State.CursorPosition.Line)
+				{
+					m_FoldBegin[b].Line = std::max<int>(0, m_FoldBegin[b].Line - 1);
+					m_FoldBegin[b].Column = m_FoldBegin[b].Column + prevSize;
+				}
+			}
+
+			for (int b = 0; b < m_FoldEnd.size(); b++)
+			{
+				if (m_FoldEnd[b].Line == m_State.CursorPosition.Line)
+				{
+					m_FoldEnd[b].Line = std::max<int>(0, m_FoldEnd[b].Line - 1);
+					m_FoldEnd[b].Column = m_FoldEnd[b].Column + prevSize;
+				}
+			}
+
 			RemoveLine(m_State.CursorPosition.Line);
 			--m_State.CursorPosition.Line;
 			m_State.CursorPosition.Column = prevSize;
@@ -4129,7 +5267,7 @@ void ImTextEdit::Backspace()
 			while (cindex > 0 && IsUTFSequence(line[cindex].Character))
 				--cindex;
 
-			//if (cindex > 0 && UTF8CharLength(line[cindex].mChar) > 1)
+			//if (cindex > 0 && UTF8CharLength(line[cindex].Character) > 1)
 			//	--cindex;
 
 			int actualLoc = pos.Column;
@@ -4175,6 +5313,8 @@ void ImTextEdit::Backspace()
 
 				m_State.CursorPosition.Column -= remSize;
 			}
+
+			RemoveFolds(u.RemovedStart, u.RemovedEnd);
 		}
 
 		if (m_ScrollbarMarkers)
@@ -4205,6 +5345,13 @@ void ImTextEdit::Backspace()
 
 	u.After = m_State;
 	AddUndo(u);
+
+	// auto-complete
+	if (m_ActiveAutocomplete && m_ACOpened)
+	{
+		m_RequestAutocomplete = true;
+		m_ReadyForAutocomplete = false;
+	}
 }
 
 void ImTextEdit::SelectWordUnderCursor()
@@ -4304,7 +5451,7 @@ void ImTextEdit::Paste()
 		u.Added = clipText;
 		u.AddedStart = GetActualCursorCoordinates();
 
-		InsertText(clipText, m_AutoindentOnPaste);
+		AppendText(clipText, m_AutoindentOnPaste);
 
 		u.AddedEnd = GetActualCursorCoordinates();
 		u.After = m_State;
@@ -4339,12 +5486,6 @@ void ImTextEdit::ResetUndos()
 	m_UndoIndex = 0;
 	m_UndoBuffer.clear();
 	m_UndoBuffer.shrink_to_fit();
-}
-
-
-void ImTextEdit::EnterAsciiCharacter(ImWchar chararacter, bool shift)
-{
-	EnterCharacter(chararacter, shift);
 }
 
 std::vector<std::string> ImTextEdit::GetRelevantExpressions(int line)

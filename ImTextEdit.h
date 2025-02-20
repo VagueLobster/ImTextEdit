@@ -226,7 +226,6 @@ public:
 		std::string Declaration;
 	};
 
-	typedef std::string m_String;
 	typedef std::unordered_map<std::string, Identifier> td_Identifiers;
 	typedef std::unordered_set<std::string> td_Keywords;
 	typedef std::map<int, std::string> td_ErrorMarkers;
@@ -351,8 +350,8 @@ public:
 	inline void SetShowWhitespaces(bool aValue) { m_ShowWhitespaces = aValue; }
 	inline bool IsShowingWhitespaces() const { return m_ShowWhitespaces; }
 
-	void InsertText(const std::string& aValue, bool indent = false);
-	void InsertText(const char* aValue, bool indent = false);
+	void AppendText(const std::string& aValue, bool indent = false);
+	void AppendText(const char* aValue, bool indent = false);
 
 	void MoveUp(int aAmount = 1, bool aSelect = false);
 	void MoveDown(int aAmount = 1, bool aSelect = false);
@@ -381,8 +380,6 @@ public:
 	void Undo(int aSteps = 1);
 	void Redo(int aSteps = 1);
 	void ResetUndos();
-
-	void EnterAsciiCharacter(ImWchar chararacter, bool shift);
 
 	std::vector<std::string> GetRelevantExpressions(int line);
 
@@ -609,6 +606,15 @@ private:
 	std::string BuildFunctionDef(const std::string& func, const std::string& lang);
 	std::string BuildVariableType(const ed::SPIRVParser::Variable& var, const std::string& lang);
 
+	void RemoveFolds(const Coordinates& start, const Coordinates& end);
+	void RemoveFolds(std::vector<Coordinates>& folds, const Coordinates& start, const Coordinates& end);
+
+	std::string AutcompleteParse(const std::string& str, const Coordinates& start);
+	void AutocompleteSelect();
+
+	void BuildMemberSuggestions(bool* keepACOpened = nullptr);
+	void BuildSuggestions(bool* keepACOpened = nullptr);
+
 	float m_LineSpacing;
 	Lines m_Lines;
 	EditorState m_State;
@@ -632,9 +638,6 @@ private:
 	std::vector<int> m_FoldConnection;
 	std::vector<bool> m_Fold;
 	bool m_FoldSorted;
-
-	//void RemoveFolds(const Coordinates& start, const Coordinates& end);
-	//void RemoveFolds(std::vector<Coordinates>& folds, const Coordinates& start, const Coordinates& end);
 	
 	uint64_t m_FoldLastIteration;
 
@@ -649,13 +652,7 @@ private:
 	std::vector<bool> m_SnippetTagHighlight;
 	int m_SnippetTagSelected, m_SnippetTagLength, m_SnippetTagPreviousLength;
 
-	//std::string AutcompleteParse(const std::string& str, const Coordinates& start);
-	//void AutocompleteSelect();
-
 	bool m_RequestAutocomplete, m_ReadyForAutocomplete;
-	
-	//void BuildMemberSuggestions(bool* keepACOpened = nullptr);	
-	//void BuildSuggestions(bool* keepACOpened = nullptr);
 
 	bool m_ActiveAutocomplete;
 	bool m_Autocomplete;

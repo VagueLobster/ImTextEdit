@@ -545,7 +545,6 @@ private:
 
 	typedef std::vector<UndoRecord> td_UndoBuffer;
 
-	void ProcessInputs();
 	float TextDistanceToLineStart(const Coordinates& aFrom) const;
 	void EnsureCursorVisible();
 	int GetPageSize() const;

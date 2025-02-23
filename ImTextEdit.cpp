@@ -331,6 +331,7 @@ void ImTextEdit::Advance(Coordinates & aCoordinates) const
 			++aCoordinates.Line;
 			cindex = 0;
 		}
+		
 		aCoordinates.Column = GetCharacterColumn(aCoordinates.Line, cindex);
 	}
 }
@@ -1998,7 +1999,8 @@ void ImTextEdit::RenderInternal(const char* aTitle)
 									{
 										weight--;
 
-										if (weight <= 0) {
+										if (weight <= 0)
+										{
 											highlightBrackets = true;
 											highlightBracketCoord = start;
 											break;
@@ -2945,7 +2947,6 @@ void ImTextEdit::RenderInternal(const char* aTitle)
 		ImGui::SetWindowFocus();
 		m_ScrollToCursor = false;
 	}
-
 	
 	// hacky way to get the bg working
 	if (m_FindOpened)
@@ -2963,7 +2964,8 @@ void ImTextEdit::RenderInternal(const char* aTitle)
 
 void ImTextEdit::OpenFunctionDeclarationTooltip(const std::string& obj, ImTextEdit::Coordinates coord)
 {
-	if (m_ACFunctions.count(obj)) {
+	if (m_ACFunctions.count(obj))
+	{
 		m_FunctionDeclarationTooltip = true;
 		m_FunctionDeclarationCoord = FindWordStart(coord);
 		m_FunctionDeclaration = BuildFunctionDef(obj, m_LanguageDefinition.Name);
@@ -2979,7 +2981,8 @@ std::string ImTextEdit::BuildFunctionDef(const std::string& func, const std::str
 
 	std::string ret = BuildVariableType(funcDef.ReturnType, lang) + " " + func + "(";
 
-	for (size_t i = 0; i < funcDef.Arguments.size(); i++) {
+	for (size_t i = 0; i < funcDef.Arguments.size(); i++)
+	{
 		ret += BuildVariableType(funcDef.Arguments[i], lang) + " " + funcDef.Arguments[i].Name;
 
 		if (i != funcDef.Arguments.size() - 1)
@@ -2990,26 +2993,25 @@ std::string ImTextEdit::BuildFunctionDef(const std::string& func, const std::str
 }
 std::string ImTextEdit::BuildVariableType(const ed::SPIRVParser::Variable& var, const std::string& lang)
 {
-	switch (var.Type) {
+	switch (var.Type)
+	{
 	case ed::SPIRVParser::ValueType::Bool:
 		return "bool";
-
 	case ed::SPIRVParser::ValueType::Float:
 		return "float";
-
 	case ed::SPIRVParser::ValueType::Int:
 		return "int";
-
 	case ed::SPIRVParser::ValueType::Void:
 		return "void";
-
 	case ed::SPIRVParser::ValueType::Struct:
 		return var.TypeName;
-
-	case ed::SPIRVParser::ValueType::Vector: {
+	case ed::SPIRVParser::ValueType::Vector:
+	{
 		std::string count = std::string(1, var.TypeComponentCount + '0');
-		if (lang == "HLSL") {
-			switch (var.BaseType) {
+		if (lang == "HLSL")
+		{
+			switch (var.BaseType)
+			{
 			case ed::SPIRVParser::ValueType::Bool:
 				return "bool" + count;
 
@@ -3020,8 +3022,10 @@ std::string ImTextEdit::BuildVariableType(const ed::SPIRVParser::Variable& var, 
 				return "int" + count;
 			}
 		}
-		else {
-			switch (var.BaseType) {
+		else
+		{
+			switch (var.BaseType)
+			{
 			case ed::SPIRVParser::ValueType::Bool:
 				return "bvec" + count;
 
@@ -3032,17 +3036,19 @@ std::string ImTextEdit::BuildVariableType(const ed::SPIRVParser::Variable& var, 
 				return "ivec" + count;
 			}
 		}
-	} break;
+		break;
+	}
 
-	case ed::SPIRVParser::ValueType::Matrix: {
+	case ed::SPIRVParser::ValueType::Matrix:
+	{
 		std::string count = std::string(1, var.TypeComponentCount + '0');
-		if (lang == "HLSL") {
+		if (lang == "HLSL")
 			return "float" + count + "x" + count;
-		}
-		else {
+		else
 			return "mat" + count;
-		}
-	} break;
+
+		break;
+	}
 	}
 
 	return "";
@@ -3755,7 +3761,6 @@ void ImTextEdit::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 	/* FIND TEXT WINDOW */
 	if (m_FindOpened)
 	{
-		ImFont* cascadiaMono = new ImFont();
 		ImFont* font = ImGui::GetFont();
 		ImGui::PushFont(font);
 
@@ -3853,7 +3858,6 @@ void ImTextEdit::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 					}
 				}
 
-
 				auto selStart = curPos, selEnd = curPos;
 				selEnd.Column += strlen(m_FindWord);
 				SetSelection(curPos, selEnd);
@@ -3928,7 +3932,6 @@ void ImTextEdit::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 						m_ReplaceIndex = 0;
 						textLoc = textSrc.find(m_FindWord, 0);
 					}
-
 
 					if (textLoc != std::string::npos)
 					{
@@ -4012,7 +4015,6 @@ void ImTextEdit::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 								}
 								totalCount += lineCharCount;
 							}
-
 
 							auto selStart = curPos, selEnd = curPos;
 							selEnd.Column += strlen(m_FindWord);
@@ -4174,7 +4176,10 @@ void ImTextEdit::SetText(const std::string & aText)
 
 	for (auto chr : aText)
 	{
-		if (chr == '\r') {} // ignore the carriage return character
+		if (chr == '\r')
+		{
+			// ignore the carriage return character
+		}
 		else if (chr == '\n')
 		{
 			m_Lines.emplace_back(Line());
@@ -5256,7 +5261,6 @@ void ImTextEdit::Backspace()
 			RemoveLine(m_State.CursorPosition.Line);
 			--m_State.CursorPosition.Line;
 			m_State.CursorPosition.Column = prevSize;
-
 		}
 		else
 		{
@@ -5278,7 +5282,8 @@ void ImTextEdit::Backspace()
 					actualLoc -= GetTabSize() - 1;
 			}
 
-			if (m_CompleteBraces && actualLoc > 0 && actualLoc < line.size()) {
+			if (m_CompleteBraces && actualLoc > 0 && actualLoc < line.size())
+			{
 				if ((line[actualLoc - 1].Character == '(' && line[actualLoc].Character == ')') || (line[actualLoc - 1].Character == '{' && line[actualLoc].Character == '}') || (line[actualLoc - 1].Character == '[' && line[actualLoc].Character == ']'))
 					Delete();
 			}
@@ -5974,10 +5979,6 @@ std::string ImTextEdit::GetCurrentLineText()const
 	return GetText(Coordinates(m_State.CursorPosition.Line, 0), Coordinates(m_State.CursorPosition.Line, lineLength));
 }
 
-void ImTextEdit::ProcessInputs()
-{
-}
-
 void ImTextEdit::Colorize(int aFromLine, int aLines)
 {
 	int toLine = aLines == -1 ? (int)m_Lines.size() : std::min<int>((int)m_Lines.size(), aFromLine + aLines);
@@ -6346,7 +6347,6 @@ void ImTextEdit::UndoRecord::Undo(ImTextEdit * aEditor)
 
 	aEditor->m_State = Before;
 	aEditor->EnsureCursorVisible();
-
 }
 
 void ImTextEdit::UndoRecord::Redo(ImTextEdit * aEditor)
